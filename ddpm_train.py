@@ -9,7 +9,7 @@ import argparse
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--params', type=str, default='params.yml', help='Parameters YAML file')
-    parser.add_argument('--gpu', type=str, default='2', help='CUDA visible devices')
+    parser.add_argument('--gpu', type=str, default='3', help='CUDA visible devices')
     args = parser.parse_args()                                                              
 
     # set GPU

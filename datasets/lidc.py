@@ -13,7 +13,7 @@ from torch.utils.data.dataset import Dataset
 import torchvision.transforms.functional as tf
 from torch.utils.data.dataset import Subset
 
-FILE_PATH_pkl = "../data/lidc_attributes.pkl"
+FILE_PATH_pkl = "data/LIDC_IDRI/lidc_attributes.pkl"
 
 NUM_CLASSES = 2
 RESOLUTION = 128

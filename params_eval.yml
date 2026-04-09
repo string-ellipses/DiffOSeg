@@ -1,9 +1,9 @@
 output_path: "./logs/"
 evaluation_path: "./evaluation/results"
 stage: 2
-evaluations: [100] #[1,5,10]  # for multiple evaluations with majority vote and for LIDC number of samples
+evaluations: [10] #[1,5,10]  # for multiple evaluations with majority vote and for LIDC number of samples
 evaluation_vote_strategy: "confidence"  # One of ["majority", "confidence"]
-dataset_file: datasets.lidc
+dataset_file: datasets.camus
 dataset_split: 'val'  # One of ['val', 'test']
 dataset_val_max_size: null # One of "null" (=full val size), or any number
 class_weights: "uniform"  # One of ["uniform", "weighted"]
@@ -65,6 +65,6 @@ unet_openai:
 load_from: 'logs/'
 
 finetune: all
-iterations: 150000
+iterations: 30000
 optim:
     build_optimizer: all

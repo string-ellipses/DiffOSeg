@@ -1,0 +1,2 @@
+**/__pycache__/  # python3自动生成的字节码缓存目录
+*.cpython-39.pyc 

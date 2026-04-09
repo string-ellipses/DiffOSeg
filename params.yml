@@ -1,9 +1,11 @@
-stage: 2
+stage: 1
 cudnn:
     benchmark: yes
     enabled: yes
 
-dataset_file: datasets.lidc
+dataset_file: datasets.camus
+k_fold_train: no #是否进行交叉验证
+kfolds: 4
 
 dataset_pipeline_train: ["flip",  "resize", "colorjitter", "torchvision_normalise"]
 dataset_pipeline_train_settings:
@@ -19,11 +21,10 @@ class_weights: "uniform"
 multigpu: no
 distributed: no
 mp_loaders: 4
-batch_size:  12 
+batch_size:  1 #2 
 samples: 10 #10 # For GED calculation
 max_epochs: 2000
 
-kfolds: 4
 
 stage1_weights: false
 optim:
@@ -43,7 +44,7 @@ beta_schedule_params:
 backbone: "unet_openai"
 
 diffusion_type: "categorical"
-time_steps: 2 #50 #250
+time_steps: 250 #250
 
 feature_cond_encoder:
     type: 'none' # ['dino', 'none']
@@ -56,7 +57,7 @@ feature_cond_encoder:
     source_layer: 11 # layer 11 is always the last layer of any dino vit model
     target_layer: 10 # at what output_stride in the unet to plug features
 
-validation_freq: 100 #30000 #0000  #50000 #00000 # #2500
+validation_freq: 80000  #50000 #00000 # #2500
 display_freq: 100
 n_validation_predictions: 3
 n_validation_images: 3
@@ -74,6 +75,6 @@ unet_openai:
     num_head_channels: 32  # If not -1, num_heads is automatically set to channels//num_head_channels
     softmax_output: yes # this is the default for build_model
 
-load_from: null #'logs/lidc_uniseg_7_fold_0/model_checkpoint_180000.pt' #'logs/LIDC_KFold_fold_0/best_checkpoint_10000_mIoU=0.5445.pt' #'logs/LIDCV1_selected_id/model_checkpoint_160000.pt'
+load_from: 'logs/stage1/model_checkpoint_30000.pt' #'logs/LIDC_KFold_fold_0/best_checkpoint_10000_mIoU=0.5445.pt' #'logs/LIDCV1_selected_id/model_checkpoint_160000.pt'
 
 output_path: "./logs/" #pretrained_from_stage1_all"

@@ -21,6 +21,7 @@ from ddpm.trainer import _build_model, _flatten
 from ddpm.utils import expanduservars
 from metrics_set import *
 from ddpm.trainer import _build_datasets
+import torch.nn.functional as F
 from sklearn.model_selection import KFold
 from torch.utils.data import Subset
 LOGGER = logging.getLogger(__name__)
@@ -148,7 +149,7 @@ class Tester:
         #np.save("stage2_image/labels", labels.squeeze(0).argmax(dim=1).cpu().numpy())
         if self.stage == 2:
             predictions = []
-            for id in range(0, 4):
+            for id in range(0, 3):
                 labels_id = labels[:,id][:, None]
                 prompt = torch.tensor(id).repeat_interleave(image.shape[0]).to(idist.device())
                 condition_b_enc = {'hint': image, 'txt': prompt}
@@ -157,11 +158,14 @@ class Tester:
 
                 prediction = self.polyak.average_model(x,  condition_b_enc, feature_condition=feature_condition)['diffusion_out']
                 prediction = prediction.reshape(labels_id.shape[0], -1, *labels_id.shape[2:])#.argmax(dim=2)
-                #np.save(f"stage2_image/100_prediction_{id}", prediction.squeeze(0).argmax(dim=1).cpu().numpy())
+                os.makedirs("stage2_image", exist_ok=True)
+                np.save("stage2_image/image.npy", image[0].squeeze(0).cpu().numpy())
+                np.save(f"stage2_image/10_prediction_{id}.npy", prediction.squeeze(0).argmax(dim=1).cpu().numpy()) #(10, C, H)
                 labels_id = labels_id.to(idist.device())
                 labels_id = labels_id.argmax(dim=2)
+                np.save(f"stage2_image/label_{id}", labels_id.squeeze(0).cpu().numpy()) # (1, C, H)
                 mean_prediction = torch.mean(prediction, dim=1)[:,None]
-                #np.save(f"stage2_image/mean_prediction_{id}", mean_prediction.squeeze(0).argmax(dim=1).squeeze(0).squeeze(0).cpu().numpy())
+                np.save(f"stage2_image/mean_prediction_{id}", mean_prediction.squeeze(0).argmax(dim=1).cpu().numpy()) # (1, C, H)
                 predictions.append(mean_prediction.to(idist.device()))
 
             predictions = torch.cat(predictions, dim=1)
@@ -175,7 +179,13 @@ class Tester:
             predictions = self.polyak.average_model(x,  condition_b_enc, feature_condition=feature_condition)['diffusion_out']
             predictions = predictions.reshape(labels.shape[0], -1, *labels.shape[2:]).to(idist.device())
 
-            labels = labels.argmax(dim=2).to(idist.device())
+            #labels = labels.argmax(dim=2).to(idist.device())
+            os.makedirs("stage1_image", exist_ok=True)
+            np.save("stage1_image/image.npy", image[0].squeeze(0).cpu().numpy())
+            # 0. 保存原始label
+            np.save("stage1_image/labels.npy", labels.squeeze(0).argmax(dim=1).cpu().numpy())
+            # 1. 保存 argmax 后的预测（类别索引）
+            np.save("stage1_image/preds.npy", predictions.squeeze(0).argmax(dim=1).cpu().numpy())
             self.counter += 1
 
         if self.stage == 1:
@@ -244,7 +254,7 @@ def load(filename: str, trainer, engine: Engine):
 
 
 
-def eval_lidc_uncertainty(params):
+def eval_lidc_uncertainty_kfolds(params):
     setup_logger(name=None, format="\x1b[32;1m%(asctime)s [%(name)s]\x1b[0m %(message)s", reset=True)
 
     LOGGER.info("%d GPUs available", torch.cuda.device_count())
@@ -366,3 +376,91 @@ def eval_lidc_uncertainty(params):
     LOGGER.info("Average Dice_soft: %s", ", ".join(["%.4g" % dice for dice in avg_Dice_soft]))
     LOGGER.info("Average Dice_match: %s", ", ".join(["%.4g" % dice for dice in avg_Dice_match]))
     LOGGER.info("Average Dice_each_mean per class: %s", ", ".join(["%.4g" % dice for dice in avg_Dice_each_mean]))
+
+def eval_lidc_uncertainty(params):
+    setup_logger(name=None, format="\x1b[32;1m%(asctime)s [%(name)s]\x1b[0m %(message)s", reset=True)
+
+    LOGGER.info("%d GPUs available", torch.cuda.device_count())
+
+    # Load the datasets
+    dataset_file: str = params['dataset_file']
+    all_dataset, all_test_dataset, class_weights, ignore_class, train_ids_to_class_names = _build_datasets(params)
+
+    # 👇 不再做交叉验证，直接使用整个测试集
+    test_loader = DataLoader(
+        all_test_dataset,
+        batch_size=params['batch_size'],
+        shuffle=False,
+        num_workers=params.get("mp_loaders", 4)
+    )
+    LOGGER.info("Test dataset: %d images from '%s'", len(all_test_dataset), dataset_file)
+
+    # 获取输入形状（安全方式：从 DataLoader 中取一个 batch）
+    for batch in test_loader:
+        if isinstance(batch, (list, tuple)):
+            image, labels = batch[0], batch[1]
+            break
+        else:
+            raise ValueError("Unexpected batch format")
+    
+    input_shapes = [test_loader.dataset[0][0].shape, test_loader.dataset[0][1].shape]
+    input_shapes[1] = input_shapes[1][1:]
+    LOGGER.info("Input shapes: " + str(input_shapes))
+    
+    num_classes = input_shapes[1][0]
+    model, average_model = [_build_model(params, input_shapes, input_shapes[0]) for _ in range(2)]
+    polyak = PolyakAverager(model, average_model, alpha=params["polyak_alpha"])
+
+    tester = Tester(
+        polyak,
+        params["evaluations"],
+        num_classes,
+        np.zeros(len(params["evaluations"])),
+        np.zeros(len(params["evaluations"])),
+        np.zeros(len(params["evaluations"])),
+        np.zeros(len(params["evaluations"])),
+        [0] * 4,
+        0, 0,
+        stage=params["stage"]
+    )
+    engine = build_engine(tester, test_loader, num_classes=num_classes)
+
+    # 加载模型
+    load_from = params.get('load_from', None)
+    if load_from:
+        load_from = os.path.join(load_from, f"stage{params['stage']}")  # fold0 仅为路径名，实际无 fold
+        pt_files = [f for f in os.listdir(load_from) if f.endswith('.pt')]
+        if pt_files:
+            pt_files.sort()
+            last_pt = pt_files[-1]
+            load_model_path = os.path.join(load_from, last_pt)
+            LOGGER.info("Loading model: %s", last_pt)
+            load_model_path = expanduservars(load_model_path)
+            load(load_model_path, trainer=tester, engine=engine)
+        else:
+            LOGGER.warning("No .pt files found in %s", load_from)
+    else:
+        LOGGER.warning("No 'load_from' specified in params, evaluating untrained model!")
+
+    # 运行评估
+    engine.state.max_epochs = None
+    engine.run(test_loader, max_epochs=1)
+
+    # 计算指标（单次运行，无需平均）
+    total_samples = tester.counter
+    GED = [g / total_samples for g in tester.geds]
+    Dice_max_reverse = [d / total_samples for d in tester.Dice_max_reverse]
+    Dice_soft = [d / total_samples for d in tester.Dice_soft]
+    Dice_match = [d / total_samples for d in tester.Dice_match]
+    Dice_each_mean = [d / total_samples for d in tester.Dice_each_mean]
+
+    LOGGER.info("Results on full test set (N=%d):", total_samples)
+    LOGGER.info("Time steps: %s, Load from: %s", params['time_steps'], load_from)
+    
+    for i in range(len(params['evaluations'])):
+        LOGGER.info("GED (%d): %.4g", params["evaluations"][i], GED[i])
+        LOGGER.info("Dice_max (%d): %.4g", params["evaluations"][i], Dice_max_reverse[i])
+        LOGGER.info("Dice_soft (%d): %.4g", params["evaluations"][i], Dice_soft[i])
+        LOGGER.info("Dice_match (%d): %.4g", params["evaluations"][i], Dice_match[i])
+        if i == len(params['evaluations']) - 1:
+            LOGGER.info("Dice_each_mean per class: %s", ", ".join(["%.4g" % d for d in Dice_each_mean]))

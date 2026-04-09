@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate LIDC Uncertainty')
     parser.add_argument('--params', type=str, default='params_eval.yml', 
                        help='Parameters YAML file')
-    parser.add_argument('--gpu', type=str, default='1', 
+    parser.add_argument('--gpu', type=str, default='0', 
                        help='CUDA visible devices')
     parser.add_argument('--seed', type=int, default=0,
                        help='Random seed')
@@ -38,10 +38,10 @@ def main():
         params = yaml.safe_load(f)
     
     # Execute evaluation based on dataset
-    if 'lidc' in params['dataset_file']:
+    # if 'lidc' in params['dataset_file']:
         eval_lidc_uncertainty(params)   
-    else:
-        raise ValueError("Unknown dataset")
+    # else:
+    #     raise ValueError("Unknown dataset")
 
 if __name__ == "__main__":
     main()

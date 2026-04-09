@@ -485,14 +485,17 @@ class Trainer:
         batch_size = x0.shape[0]
 
         # Sample a random step and generate gaussian noise
-        t = torch.randint(1, self.time_steps + 1, size=(batch_size,), device=device)
+        t = torch.full((batch_size,), 100, dtype=torch.long, device=device)#torch.randint(1, self.time_steps + 1, size=(batch_size,), device=device)
         xt = self.diffusion_model.q_xt_given_x0(x0, t).sample()
-
+        t1 = torch.full((batch_size,), 10, dtype=torch.long, device=device)
+        xt1 = self.diffusion_model.q_xt_given_x0(x0, t1).sample()
+        np.save("visual_debug/xt.npy", torch.argmax(xt,dim=1).detach().cpu().numpy()) 
+        np.save("visual_debug/x0pred.npy", torch.argmax(xt1,dim=1).detach().cpu().numpy()) 
         # Estimate the noise with the model
         condition = {key: value.contiguous() for key, value in condition.items()}
         ret = self.model(xt.contiguous(), condition, feature_condition, t)
         x0pred = ret["diffusion_out"]
-
+        
         prob_xtm1_given_xt_x0 = self.diffusion_model.theta_post(xt, x0, t)
         prob_xtm1_given_xt_x0pred = self.diffusion_model.theta_post_prob(xt, x0pred, t)
 
@@ -573,7 +576,7 @@ class Trainer:
         elif self.params['stage'] == 1:
             image, labels = batch 
             image = image.repeat_interleave(max_num_samples, dim=0).to(idist.device())
-            labels = labels[:,None].to(idist.device())
+            #labels = labels[:,None].to(idist.device())
             condition = {'hint': image}
         else:
             raise ValueError("stage must be 1 OR 2.")
@@ -589,10 +592,10 @@ class Trainer:
         # label = label.argmax(dim=1)
         prediction = self.predict(x, condition)
         prediction = prediction.reshape(labels.shape[0], -1, *labels.shape[2:])
-        labels = labels.argmax(dim=2).squeeze(1)
+        labels = labels.argmax(dim=2).squeeze(1).float().mean(dim=(1))
 
         mean_prediction = torch.log(prediction).mean(dim=(1))
-        return {'y_pred': mean_prediction, 'y': labels}
+        return {'y_pred': mean_prediction, 'y': labels[:, None]}
     
     @torch.no_grad()
     def predict(self, xt: Tensor, condition: dict, label_ref: Optional[Tensor] = None) -> Tensor:
@@ -777,24 +780,24 @@ def build_engine(trainer: Trainer,
     @engine.on(Events.ITERATION_COMPLETED(every=validation_freq))
     @idist.one_rank_only(rank=0, with_barrier=True)
     def test(_: Engine):
-        if 'lidc' in params["dataset_file"]:
-            # LOGGER.info("GED computation...")
-            # ged, sim_samples, hm_iou, personal = compute_ged(validation_loader, _flatten(trainer.average_model), params["samples"],
-            #                                        trainer.average_feature_cond_encoder)
-            # LOGGER.info("mean GED %.3f, mean sim-samples %.3f, mean hm-IoU %.2f, Personal Scores {%s}", ged, sim_samples, hm_iou, personal)
-            # writer.add_scalar('Validation/GED', ged, engine.state.iteration)
-            # writer.add_scalar('Validation/HMIoU', hm_iou, engine.state.iteration)
-            LOGGER.info("val mIoU computation...")
-            #miou, personal = compute_miou(validation_loader, _flatten(trainer.average_model), params["samples"], trainer.average_feature_cond_encoder)
-            metrics_dict = compute_metrics(validation_loader, _flatten(trainer.average_model), params["samples"])
-            LOGGER.info("mean iou %.3f", metrics_dict['mIoU_each_mean'])
-            # engine.state.metrics['GED'] = ged
-            # engine.state.metrics['HMIoU'] = hm_iou
-            engine.state.metrics['mIoU'] = metrics_dict['mIoU_each_mean'].item()
-            checkpoint_best_miou(engine, trainer.objects_to_save(engine, weights_only=False))
-        else:
-            LOGGER.info("val mIoU computation...")
-            engine_test.run(validation_loader, max_epochs=1)
+        #if 'lidc' in params["dataset_file"]:
+        # LOGGER.info("GED computation...")
+        # ged, sim_samples, hm_iou, personal = compute_ged(validation_loader, _flatten(trainer.average_model), params["samples"],
+        #                                        trainer.average_feature_cond_encoder)
+        # LOGGER.info("mean GED %.3f, mean sim-samples %.3f, mean hm-IoU %.2f, Personal Scores {%s}", ged, sim_samples, hm_iou, personal)
+        # writer.add_scalar('Validation/GED', ged, engine.state.iteration)
+        # writer.add_scalar('Validation/HMIoU', hm_iou, engine.state.iteration)
+        LOGGER.info("val mIoU computation...")
+        #miou, personal = compute_miou(validation_loader, _flatten(trainer.average_model), params["samples"], trainer.average_feature_cond_encoder)
+        metrics_dict = compute_metrics(validation_loader, _flatten(trainer.average_model), params["samples"])
+        LOGGER.info("mean iou %.3f", metrics_dict['mIoU_each_mean'])
+        # engine.state.metrics['GED'] = ged
+        # engine.state.metrics['HMIoU'] = hm_iou
+        engine.state.metrics['mIoU'] = metrics_dict['mIoU_each_mean'].item()
+        checkpoint_best_miou(engine, trainer.objects_to_save(engine, weights_only=False))
+        # else:
+        #     LOGGER.info("val mIoU computation...")
+        #     engine_test.run(validation_loader, max_epochs=1)
 
     # Save the best models by mIoU score (runs once every len(validation_loader))
     @engine_test.on(Events.EPOCH_COMPLETED)
@@ -900,39 +903,135 @@ def run_train(local_rank: int, params: dict):
 
     # Load the datasets
     all_dataset, all_test_dataset, class_weights, ignore_class, train_ids_to_class_names = _build_datasets(params)
-    # split datasets into k folds
-    kfolds = params['kfolds']
-    kf = KFold(n_splits=kfolds, shuffle=False)
+    
+    # use k_fold_train or not
+    if params['k_fold_train']:
+        # split datasets into k folds
+        kfolds = params['kfolds']
+        kf = KFold(n_splits=kfolds, shuffle=False)
 
-    splits = []
-    indices = list(range(len(all_dataset)))
-    np.random.seed(1337)
-    np.random.shuffle(indices)
-    for (train_index, test_index) in kf.split(np.arange(len(all_dataset))):
-        splits.append({
-            'train_index': [indices[i] for i in train_index.tolist()],
-            'test_index': [indices[i] for i in test_index.tolist()]})
-    print(f"Fold {len(splits)} training samples: {len(train_index)}, testing samples: {len(test_index)}")
+        splits = []
+        indices = list(range(len(all_dataset)))
+        np.random.seed(1337)
+        np.random.shuffle(indices)
+        for (train_index, test_index) in kf.split(np.arange(len(all_dataset))):
+            splits.append({
+                'train_index': [indices[i] for i in train_index.tolist()],
+                'test_index': [indices[i] for i in test_index.tolist()]})
+        print(f"Fold {len(splits)} training samples: {len(train_index)}, testing samples: {len(test_index)}")
 
-    LOGGER.info("Training params:\n%s", pprint.pformat(params))
-    # num_gpus = torch.cuda.device_count()
-    LOGGER.info("%d GPUs available", torch.cuda.device_count())
+        LOGGER.info("Training params:\n%s", pprint.pformat(params))
+        # num_gpus = torch.cuda.device_count()
+        LOGGER.info("%d GPUs available", torch.cuda.device_count())
 
-    cudnn.benchmark = params['cudnn']['benchmark']  # this set to true usually slightly accelerates training
-    LOGGER.info(f'*** setting cudnn.benchmark to {cudnn.benchmark} ***')
-    LOGGER.info(f"*** cudnn.enabled {cudnn.enabled}")
-    LOGGER.info(f"*** cudnn.deterministic {cudnn.deterministic}")
+        cudnn.benchmark = params['cudnn']['benchmark']  # this set to true usually slightly accelerates training
+        LOGGER.info(f'*** setting cudnn.benchmark to {cudnn.benchmark} ***')
+        LOGGER.info(f"*** cudnn.enabled {cudnn.enabled}")
+        LOGGER.info(f"*** cudnn.deterministic {cudnn.deterministic}")
 
-    for fold_idx in range(0, kfolds):
-        print(f"Starting fold {fold_idx}")
-        train_indices = splits[fold_idx]['train_index']
-        test_indices = splits[fold_idx]['test_index']
-        train_sampler = SubsetRandomSampler(train_indices)
-        test_sampler = SubsetRandomSampler(test_indices)
-        train_loader = DataLoader(all_dataset, batch_size=params['batch_size'], sampler=train_sampler)
-        test_loader = DataLoader(all_test_dataset, batch_size=20, sampler=test_sampler)
+        for fold_idx in range(0, kfolds):
+            print(f"Starting fold {fold_idx}")
+            train_indices = splits[fold_idx]['train_index']
+            test_indices = splits[fold_idx]['test_index']
+            train_sampler = SubsetRandomSampler(train_indices)
+            test_sampler = SubsetRandomSampler(test_indices)
+            train_loader = DataLoader(all_dataset, batch_size=params['batch_size'], sampler=train_sampler)
+            test_loader = DataLoader(all_test_dataset, batch_size=1, sampler=test_sampler)
+            # Create output folder and archive the current code and the parameters there
+            output_path = f"{params['output_path']}stage{params['stage']}_fold{fold_idx}"
+            os.makedirs(output_path, exist_ok=True)
+            LOGGER.info("experiment dir: %s", output_path)
+            archive_code(output_path)
+            writer = SummaryWriter(log_dir=os.path.join(output_path, 'tensorboard_logs'))
+
+            # Build the model, optimizer, trainer and training engine
+            input_shapes = [i.shape for i in train_loader.dataset[0] if hasattr(i, 'shape')]
+            LOGGER.info("Input shapes: " + str(input_shapes))
+            cond_encoded_shape = input_shapes[0]
+            LOGGER.info("Encoded condition shape: " + str(cond_encoded_shape))
+            num_classes = input_shapes[1][0]
+            assert len(class_weights) == num_classes, f"len(class_weights) != num_classes: {len(class_weights)} != {num_classes}"
+
+            model, average_model = [_build_model(params, input_shapes, cond_encoded_shape) for _ in range(2)]
+
+            if params['stage'] == 2:
+                pretrained_weights_path = params['stage1_weights']#f'logs/lidc_stage1_majority/lidc_mix_majority_fold_{fold_idx}/model_checkpoint.pt'
+                if pretrained_weights_path:
+                    pretrained_weights_path = expanduservars(pretrained_weights_path)
+                    pretrained_state_dict = torch.load(pretrained_weights_path, map_location='cpu')['model']
+                    # 加载模型权重，允许部分匹配
+                    pretrained_state_dict = {
+                        "unet." + k: v
+                        for k, v in pretrained_state_dict.items()
+                    }
+                    model_state_dict = model.state_dict()
+                    # 筛选匹配的键，并跳过形状不匹配的键
+                    pretrained_dict = {}
+                    skipped_keys = []
+                    for k, v in pretrained_state_dict.items():
+                        if k in model_state_dict:
+                            if v.shape == model_state_dict[k].shape:
+                                pretrained_dict[k] = v
+                            else:
+                                skipped_keys.append(k)
+                        else:
+                            skipped_keys.append(k)
+
+                    missing_keys, unexpected_keys = model.load_state_dict(pretrained_dict, strict=False)
+                    loaded_keys = pretrained_dict.keys()
+            
+                    LOGGER.info(f"Loaded pretrained weights from {pretrained_weights_path}")
+                    LOGGER.info(f"Loaded keys: {loaded_keys}")
+                    LOGGER.info(f"Missing keys: {missing_keys}")
+                    LOGGER.info(f"Unexpected keys: {unexpected_keys}")
+                    LOGGER.info(f"Skipped keys due to shape mismatch: {skipped_keys}")
+
+            average_model.load_state_dict(model.state_dict())
+            
+            num_of_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            LOGGER.info("unet_openai trainable params: %d", num_of_parameters)
+            feature_cond_encoder, cond_vis_fn = _build_feature_cond_encoder(params)
+            average_feature_cond_encoder, _ = _build_feature_cond_encoder(params)
+            feature_cond_polyak = PolyakAverager(feature_cond_encoder, average_feature_cond_encoder) if feature_cond_encoder else None
+
+            polyak = PolyakAverager(model, average_model, alpha=params["polyak_alpha"])
+            optimizer_staff = build_optimizer(params, model, feature_cond_encoder, train_loader, debug=False)
+
+            optimizer = optimizer_staff['optimizer']
+            lr_scheduler = optimizer_staff['lr_scheduler']
+
+            debug_checkpoint = _build_debug_checkpoint(output_path)
+            trainer = Trainer(polyak, optimizer, lr_scheduler, class_weights.to(idist.device()), debug_checkpoint,
+                            feature_cond_polyak, params)
+            engine = build_engine(trainer, output_path, train_loader, test_loader, cond_vis_fn,
+                                num_classes=num_classes, ignore_class=ignore_class,
+                                params=params,
+                                writer=writer)
+
+            # Load a model (if requested in params.yml) to continue training from it
+            load_from = params.get('load_from', None)
+            if load_from is not None:
+                load_from = expanduservars(load_from)
+                load(load_from, trainer=trainer, engine=engine)
+                optimizer.param_groups[0]['capturable'] = True
+
+            # Run the training engine for the requested number of epochs
+
+            engine.run(train_loader, max_epochs=params["max_epochs"])
+            writer.close()
+    else:
+        LOGGER.info("Training params:\n%s", pprint.pformat(params))
+        # num_gpus = torch.cuda.device_count()
+        LOGGER.info("%d GPUs available", torch.cuda.device_count())
+
+        cudnn.benchmark = params['cudnn']['benchmark']  # this set to true usually slightly accelerates training
+        LOGGER.info(f'*** setting cudnn.benchmark to {cudnn.benchmark} ***')
+        LOGGER.info(f"*** cudnn.enabled {cudnn.enabled}")
+        LOGGER.info(f"*** cudnn.deterministic {cudnn.deterministic}")
+        train_loader = DataLoader(all_dataset, batch_size=params['batch_size'], shuffle=True)
+        test_loader = DataLoader(all_test_dataset, batch_size=1, shuffle=False) #dirty-fixed: bs=1
         # Create output folder and archive the current code and the parameters there
-        output_path = f"{params['output_path']}stage{params['stage']}_fold{fold_idx}"
+        output_path = f"{params['output_path']}stage{params['stage']}"
         os.makedirs(output_path, exist_ok=True)
         LOGGER.info("experiment dir: %s", output_path)
         archive_code(output_path)
@@ -1013,3 +1112,4 @@ def run_train(local_rank: int, params: dict):
 
         engine.run(train_loader, max_epochs=params["max_epochs"])
         writer.close()
+

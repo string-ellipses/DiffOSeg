@@ -5,7 +5,7 @@
 ## Updates
 - [2025.08.27]🔥 Our work has been **shortlisted** for the **MICCAI 2025 Best Paper and Young Scientist Awards**, ranking among the top 25 of 1014 accepted papers (from 3447 submissions) !
 - [2025.06.18]📩 Our work has been accepted by **MICCAI 2025** !
-- [2024.10.23]🥈 We won **2nd** place on both tasks of [MMIS-2024@ACM MM 2024](https://mmis2024.com/) !
+- [2024.10.23]🥈 We won **2nd** place on both tasks of [MMIS-2024@ACM MM 2024](https://mmis2024.vercel.app/) !
 ## Method
 In this study, we propose DiffOSeg, a two-stage diffusion-based framework, which aims to simultaneously achieve both consensus-driven (combining all experts' opinions) and preference-driven (reflecting experts' individual assessments) segmentation. Stage I establishes population consensus through a probabilistic consensus strategy, while Stage II captures expert-specific preference via adaptive prompts. For more details, please refer to [our paper](https://arxiv.org/abs/2507.13087).
 <div align="center">
@@ -13,10 +13,6 @@ In this study, we propose DiffOSeg, a two-stage diffusion-based framework, which
 </div>
 
 ## Usage
-
-### Task-List
-- [ ] Add NPC-170 process.
-- [ ] Polish code.
 
 ### Installation & Data Preparation
 See [INSTALL.md](INSTALL.md) for the installation of dependencies and dataset preperation required to run this codebase.
